@@ -5,6 +5,7 @@ description = "Extractor de datos de pistas de X-Plane"
 requires-python = ">=3.10"
 dependencies = [
     "xplane_airports>=4.0.0",
+    "mysql-connector-python>=8.0.0",
 ]
 
 [build-system]
