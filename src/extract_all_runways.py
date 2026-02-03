@@ -6,9 +6,10 @@ Connects to MySQL, retrieves all airports, matches them with X-Plane data,
 and writes runway information to a file.
 
 Usage:
-    uv run python src/extract_all_runways.py
+    uv run python src/extract_all_runways.py [--dry]
 """
 
+import argparse
 import sys
 from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
@@ -217,6 +218,10 @@ def format_runway_data(icao: str, name: str, runways: list[dict]) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Extract runway data from X-Plane")
+    parser.add_argument("--dry", action="store_true", help="Dry run, don't write output file")
+    args = parser.parse_args()
+
     # Find apt.dat file
     script_dir = Path(__file__).parent.parent
     apt_dat_path = script_dir / "xplane_data" / "apt.dat"
@@ -234,14 +239,16 @@ def main():
     # Track X-Plane airports that were matched
     matched_xplane_icaos = set()
 
-    # Process airports and write results
+    # Process airports
     output_path = Path("/tmp/runways_extracted.txt")
-    print(f"Writing results to {output_path}...", file=sys.stderr)
+    if not args.dry:
+        print(f"Writing results to {output_path}...", file=sys.stderr)
 
     found_count = 0
-    not_found_count = 0
+    not_found_in_xplane = []  # DB airports not found in X-Plane
+    out_file = None if args.dry else open(output_path, "w", encoding="utf-8")
 
-    with open(output_path, "w", encoding="utf-8") as out:
+    try:
         for i, db_apt in enumerate(db_airports):
             icao = db_apt["icao_code"]
             name = db_apt["name"]
@@ -266,10 +273,14 @@ def main():
                 found_count += 1
 
                 # Write runway data
-                out.write(format_runway_data(icao, name, xplane_apt["runways"]))
-                out.write("\n\n")
+                if out_file:
+                    out_file.write(format_runway_data(icao, name, xplane_apt["runways"]))
+                    out_file.write("\n\n")
             else:
-                not_found_count += 1
+                not_found_in_xplane.append((icao, name))
+    finally:
+        if out_file:
+            out_file.close()
 
     # Report X-Plane airports not found in database
     unmatched_xplane = set(xplane_airports.keys()) - matched_xplane_icaos
@@ -279,13 +290,18 @@ def main():
         safe_name = apt['name'].encode('ascii', 'replace').decode('ascii')
         print(f"WARNING: X-Plane airport {icao} ({safe_name}) not found in database")
 
+    # Report DB airports not found in X-Plane
+    for icao, name in sorted(not_found_in_xplane):
+        print(f"WARNING: DB airport {icao} ({name}) not found in X-Plane")
+
     # Summary
     print(f"\nSummary:")
     print(f"  Database airports: {len(db_airports)}")
     print(f"  Matched with X-Plane: {found_count}")
-    print(f"  Not found in X-Plane: {not_found_count}")
+    print(f"  Not found in X-Plane: {len(not_found_in_xplane)}")
     print(f"  X-Plane airports not in DB: {len(unmatched_xplane)}")
-    print(f"\nResults written to: {output_path}")
+    if not args.dry:
+        print(f"\nResults written to: {output_path}")
 
 
 if __name__ == "__main__":
