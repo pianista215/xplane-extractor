@@ -75,8 +75,14 @@ def parse_land_runway(parts: list[str]) -> dict:
     }
 
 
-def get_airports_from_db() -> list[dict]:
-    """Fetch all airports from the database."""
+def is_heliport(name: str) -> bool:
+    """Check if airport name indicates a heliport/helipad."""
+    name_lower = name.lower()
+    return "heliport" in name_lower or "helipad" in name_lower
+
+
+def get_airports_from_db() -> tuple[list[dict], int]:
+    """Fetch all airports from the database, filtering out heliports."""
     print("Connecting to database...", file=sys.stderr)
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor(dictionary=True)
@@ -84,27 +90,32 @@ def get_airports_from_db() -> list[dict]:
     cursor.execute(
         "SELECT icao_code, name, latitude, longitude FROM airport ORDER BY icao_code"
     )
-    airports = cursor.fetchall()
+    all_airports = cursor.fetchall()
 
     cursor.close()
     conn.close()
 
-    print(f"Loaded {len(airports)} airports from database", file=sys.stderr)
-    return airports
+    airports = [a for a in all_airports if not is_heliport(a["name"] or "")]
+    heliports_filtered = len(all_airports) - len(airports)
+
+    print(f"Loaded {len(airports)} airports from database (filtered {heliports_filtered} heliports)", file=sys.stderr)
+    return airports, heliports_filtered
 
 
-def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple]]:
+def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple], int]:
     """
-    Load all airports from apt.dat into memory.
+    Load all airports from apt.dat into memory, filtering out heliports.
 
     Returns:
         - Dict mapping ICAO -> airport data (with runways)
         - List of (icao, lat, lon) for coordinate-based search
+        - Count of filtered heliports
     """
     print("Loading X-Plane apt.dat file...", file=sys.stderr)
 
     xplane_airports = {}
     coord_index = []
+    heliports_filtered = 0
 
     current_icao = None
     current_name = None
@@ -112,6 +123,7 @@ def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple]]:
     current_lon = None
     current_runways = []
     first_runway_coords = None
+    current_is_heliport = False
 
     with open(apt_dat_path, "r", encoding="latin-1") as f:
         for line in f:
@@ -125,20 +137,23 @@ def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple]]:
 
             # Start of a new airport
             if row_code in ("1", "16", "17"):
-                # Save previous airport if it had runways
+                # Save previous airport if it had runways and is not a heliport
                 if current_icao and current_runways:
-                    # Use first runway coordinates as airport reference
-                    if first_runway_coords:
-                        current_lat, current_lon = first_runway_coords
+                    if current_is_heliport:
+                        heliports_filtered += 1
+                    else:
+                        # Use first runway coordinates as airport reference
+                        if first_runway_coords:
+                            current_lat, current_lon = first_runway_coords
 
-                    xplane_airports[current_icao] = {
-                        "name": current_name,
-                        "lat": current_lat,
-                        "lon": current_lon,
-                        "runways": current_runways,
-                    }
-                    if current_lat is not None and current_lon is not None:
-                        coord_index.append((current_icao, current_lat, current_lon))
+                        xplane_airports[current_icao] = {
+                            "name": current_name,
+                            "lat": current_lat,
+                            "lon": current_lon,
+                            "runways": current_runways,
+                        }
+                        if current_lat is not None and current_lon is not None:
+                            coord_index.append((current_icao, current_lat, current_lon))
 
                 # Start new airport
                 if len(parts) >= 5:
@@ -148,6 +163,8 @@ def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple]]:
                     first_runway_coords = None
                     current_lat = None
                     current_lon = None
+                    # Row code 17 = Heliport in X-Plane
+                    current_is_heliport = row_code == "17"
                 else:
                     current_icao = None
 
@@ -161,19 +178,22 @@ def load_xplane_airports(apt_dat_path: Path) -> tuple[dict, list[tuple]]:
 
         # Don't forget the last airport
         if current_icao and current_runways:
-            if first_runway_coords:
-                current_lat, current_lon = first_runway_coords
-            xplane_airports[current_icao] = {
-                "name": current_name,
-                "lat": current_lat,
-                "lon": current_lon,
-                "runways": current_runways,
-            }
-            if current_lat is not None and current_lon is not None:
-                coord_index.append((current_icao, current_lat, current_lon))
+            if current_is_heliport:
+                heliports_filtered += 1
+            else:
+                if first_runway_coords:
+                    current_lat, current_lon = first_runway_coords
+                xplane_airports[current_icao] = {
+                    "name": current_name,
+                    "lat": current_lat,
+                    "lon": current_lon,
+                    "runways": current_runways,
+                }
+                if current_lat is not None and current_lon is not None:
+                    coord_index.append((current_icao, current_lat, current_lon))
 
-    print(f"Loaded {len(xplane_airports)} X-Plane airports with runways", file=sys.stderr)
-    return xplane_airports, coord_index
+    print(f"Loaded {len(xplane_airports)} X-Plane airports with runways (filtered {heliports_filtered} heliports)", file=sys.stderr)
+    return xplane_airports, coord_index, heliports_filtered
 
 
 def find_airport_by_coords(
@@ -233,8 +253,8 @@ def main():
         sys.exit(1)
 
     # Load data
-    db_airports = get_airports_from_db()
-    xplane_airports, coord_index = load_xplane_airports(apt_dat_path)
+    db_airports, db_heliports_filtered = get_airports_from_db()
+    xplane_airports, coord_index, xplane_heliports_filtered = load_xplane_airports(apt_dat_path)
 
     # Track X-Plane airports that were matched
     matched_xplane_icaos = set()
@@ -296,7 +316,8 @@ def main():
 
     # Summary
     print(f"\nSummary:")
-    print(f"  Database airports: {len(db_airports)}")
+    print(f"  Database airports: {len(db_airports)} (filtered {db_heliports_filtered} heliports)")
+    print(f"  X-Plane airports: {len(xplane_airports)} (filtered {xplane_heliports_filtered} heliports)")
     print(f"  Matched with X-Plane: {found_count}")
     print(f"  Not found in X-Plane: {len(not_found_in_xplane)}")
     print(f"  X-Plane airports not in DB: {len(unmatched_xplane)}")

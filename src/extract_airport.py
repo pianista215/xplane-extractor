@@ -9,7 +9,9 @@ Example:
     uv run python src/extract_airport.py LEMD
 """
 
+import json
 import sys
+from math import atan2, cos, degrees, radians, sin
 from pathlib import Path
 
 # Surface type codes
@@ -170,6 +172,345 @@ def find_airport(apt_dat_path: Path, icao_code: str) -> dict | None:
     return None
 
 
+def offset_point(lat: float, lon: float, bearing_deg: float, distance_m: float) -> tuple[float, float]:
+    """
+    Calculate a new point given a starting point, bearing, and distance.
+    Returns (lat, lon) in degrees.
+    """
+    R = 6371000  # Earth radius in meters
+    bearing = radians(bearing_deg)
+    lat1 = radians(lat)
+    lon1 = radians(lon)
+
+    lat2 = lat1 + (distance_m / R) * cos(bearing)
+    lon2 = lon1 + (distance_m / R) * sin(bearing) / cos(lat1)
+
+    return degrees(lat2), degrees(lon2)
+
+
+def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate bearing in degrees from point 1 to point 2."""
+    lat1_r, lon1_r = radians(lat1), radians(lon1)
+    lat2_r, lon2_r = radians(lat2), radians(lon2)
+
+    dlon = lon2_r - lon1_r
+    x = sin(dlon) * cos(lat2_r)
+    y = cos(lat1_r) * sin(lat2_r) - sin(lat1_r) * cos(lat2_r) * cos(dlon)
+
+    return (degrees(atan2(x, y)) + 360) % 360
+
+
+def generate_runway_polygon(rwy: dict) -> dict:
+    """Generate GeoJSON polygon for a runway with all zones."""
+    end1 = rwy["end1"]
+    end2 = rwy["end2"]
+    width = rwy["width"]
+    half_width = width / 2
+
+    # Calculate bearing from end1 to end2
+    bearing = calculate_bearing(end1["lat"], end1["lon"], end2["lat"], end2["lon"])
+    reverse_bearing = (bearing + 180) % 360
+    perp_left = (bearing - 90) % 360
+    perp_right = (bearing + 90) % 360
+
+    features = []
+
+    # Stopway/overrun end1 (before threshold 1)
+    if end1["overrun"] > 0:
+        p1 = offset_point(end1["lat"], end1["lon"], reverse_bearing, end1["overrun"])
+        p1_left = offset_point(p1[0], p1[1], perp_left, half_width)
+        p1_right = offset_point(p1[0], p1[1], perp_right, half_width)
+        t1_left = offset_point(end1["lat"], end1["lon"], perp_left, half_width)
+        t1_right = offset_point(end1["lat"], end1["lon"], perp_right, half_width)
+
+        features.append({
+            "type": "Feature",
+            "properties": {"zone": "stopway", "label": f"Stopway {end1['id']} ({end1['overrun']}m)"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [p1_left[1], p1_left[0]],
+                    [p1_right[1], p1_right[0]],
+                    [t1_right[1], t1_right[0]],
+                    [t1_left[1], t1_left[0]],
+                    [p1_left[1], p1_left[0]],
+                ]]
+            }
+        })
+
+    # Stopway/overrun end2 (after threshold 2)
+    if end2["overrun"] > 0:
+        p2 = offset_point(end2["lat"], end2["lon"], bearing, end2["overrun"])
+        p2_left = offset_point(p2[0], p2[1], perp_left, half_width)
+        p2_right = offset_point(p2[0], p2[1], perp_right, half_width)
+        t2_left = offset_point(end2["lat"], end2["lon"], perp_left, half_width)
+        t2_right = offset_point(end2["lat"], end2["lon"], perp_right, half_width)
+
+        features.append({
+            "type": "Feature",
+            "properties": {"zone": "stopway", "label": f"Stopway {end2['id']} ({end2['overrun']}m)"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [t2_left[1], t2_left[0]],
+                    [t2_right[1], t2_right[0]],
+                    [p2_right[1], p2_right[0]],
+                    [p2_left[1], p2_left[0]],
+                    [t2_left[1], t2_left[0]],
+                ]]
+            }
+        })
+
+    # Displaced threshold end1
+    if end1["displaced_threshold"] > 0:
+        dt1 = offset_point(end1["lat"], end1["lon"], bearing, end1["displaced_threshold"])
+        t1_left = offset_point(end1["lat"], end1["lon"], perp_left, half_width)
+        t1_right = offset_point(end1["lat"], end1["lon"], perp_right, half_width)
+        dt1_left = offset_point(dt1[0], dt1[1], perp_left, half_width)
+        dt1_right = offset_point(dt1[0], dt1[1], perp_right, half_width)
+
+        features.append({
+            "type": "Feature",
+            "properties": {"zone": "displaced", "label": f"Displaced {end1['id']} ({end1['displaced_threshold']}m)"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [t1_left[1], t1_left[0]],
+                    [t1_right[1], t1_right[0]],
+                    [dt1_right[1], dt1_right[0]],
+                    [dt1_left[1], dt1_left[0]],
+                    [t1_left[1], t1_left[0]],
+                ]]
+            }
+        })
+
+    # Displaced threshold end2
+    if end2["displaced_threshold"] > 0:
+        dt2 = offset_point(end2["lat"], end2["lon"], reverse_bearing, end2["displaced_threshold"])
+        t2_left = offset_point(end2["lat"], end2["lon"], perp_left, half_width)
+        t2_right = offset_point(end2["lat"], end2["lon"], perp_right, half_width)
+        dt2_left = offset_point(dt2[0], dt2[1], perp_left, half_width)
+        dt2_right = offset_point(dt2[0], dt2[1], perp_right, half_width)
+
+        features.append({
+            "type": "Feature",
+            "properties": {"zone": "displaced", "label": f"Displaced {end2['id']} ({end2['displaced_threshold']}m)"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [dt2_left[1], dt2_left[0]],
+                    [dt2_right[1], dt2_right[0]],
+                    [t2_right[1], t2_right[0]],
+                    [t2_left[1], t2_left[0]],
+                    [dt2_left[1], dt2_left[0]],
+                ]]
+            }
+        })
+
+    # Main runway surface (between thresholds, excluding displaced areas)
+    start1_lat, start1_lon = end1["lat"], end1["lon"]
+    start2_lat, start2_lon = end2["lat"], end2["lon"]
+
+    if end1["displaced_threshold"] > 0:
+        start1_lat, start1_lon = offset_point(end1["lat"], end1["lon"], bearing, end1["displaced_threshold"])
+    if end2["displaced_threshold"] > 0:
+        start2_lat, start2_lon = offset_point(end2["lat"], end2["lon"], reverse_bearing, end2["displaced_threshold"])
+
+    s1_left = offset_point(start1_lat, start1_lon, perp_left, half_width)
+    s1_right = offset_point(start1_lat, start1_lon, perp_right, half_width)
+    s2_left = offset_point(start2_lat, start2_lon, perp_left, half_width)
+    s2_right = offset_point(start2_lat, start2_lon, perp_right, half_width)
+
+    features.append({
+        "type": "Feature",
+        "properties": {"zone": "runway", "label": f"Runway {end1['id']}/{end2['id']} ({rwy['width']}m wide)"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [s1_left[1], s1_left[0]],
+                [s1_right[1], s1_right[0]],
+                [s2_right[1], s2_right[0]],
+                [s2_left[1], s2_left[0]],
+                [s1_left[1], s1_left[0]],
+            ]]
+        }
+    })
+
+    # Threshold markers (points)
+    features.append({
+        "type": "Feature",
+        "properties": {"zone": "threshold", "label": f"THR {end1['id']}"},
+        "geometry": {"type": "Point", "coordinates": [end1["lon"], end1["lat"]]}
+    })
+    features.append({
+        "type": "Feature",
+        "properties": {"zone": "threshold", "label": f"THR {end2['id']}"},
+        "geometry": {"type": "Point", "coordinates": [end2["lon"], end2["lat"]]}
+    })
+
+    return features
+
+
+def generate_map_html(airport: dict, output_path: Path) -> None:
+    """Generate an HTML file with OpenLayers map showing runways."""
+    features = []
+
+    for rwy in airport["land_runways"]:
+        features.extend(generate_runway_polygon(rwy))
+
+    # Calculate center point
+    all_lats = []
+    all_lons = []
+    for rwy in airport["land_runways"]:
+        all_lats.extend([rwy["end1"]["lat"], rwy["end2"]["lat"]])
+        all_lons.extend([rwy["end1"]["lon"], rwy["end2"]["lon"]])
+
+    center_lat = sum(all_lats) / len(all_lats) if all_lats else 0
+    center_lon = sum(all_lons) / len(all_lons) if all_lons else 0
+
+    geojson = {"type": "FeatureCollection", "features": features}
+
+    html = f'''<!DOCTYPE html>
+<html>
+<head>
+    <title>{airport["icao"]} - {airport["name"]}</title>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol.css">
+    <style>
+        html, body, #map {{ height: 100%; margin: 0; padding: 0; }}
+        .legend {{
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            font-family: sans-serif;
+            font-size: 12px;
+        }}
+        .legend-item {{ display: flex; align-items: center; margin: 5px 0; }}
+        .legend-color {{ width: 20px; height: 20px; margin-right: 8px; border: 1px solid #333; }}
+        .info {{
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            font-family: sans-serif;
+            font-size: 12px;
+            max-width: 300px;
+        }}
+        #popup {{
+            position: absolute;
+            background: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            font-family: sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+        }}
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="legend">
+        <strong>{airport["icao"]} - {airport["name"]}</strong>
+        <hr>
+        <div class="legend-item"><div class="legend-color" style="background: #333;"></div>Runway</div>
+        <div class="legend-item"><div class="legend-color" style="background: #ff9800;"></div>Displaced Threshold</div>
+        <div class="legend-item"><div class="legend-color" style="background: #f44336;"></div>Stopway/Overrun</div>
+        <div class="legend-item"><div class="legend-color" style="background: #4caf50; border-radius: 50%;"></div>Threshold</div>
+    </div>
+    <div class="info">
+        <strong>Runways:</strong><br>
+        {"<br>".join(f"{rwy['end1']['id']}/{rwy['end2']['id']}: {rwy['width']}m wide, {rwy['surface_name']}" for rwy in airport["land_runways"])}
+    </div>
+    <div id="popup" style="display: none;"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol@v8.2.0/dist/ol.js"></script>
+    <script>
+        const geojsonData = {json.dumps(geojson)};
+
+        const styles = {{
+            'runway': new ol.style.Style({{
+                fill: new ol.style.Fill({{ color: 'rgba(51, 51, 51, 0.8)' }}),
+                stroke: new ol.style.Stroke({{ color: '#000', width: 1 }})
+            }}),
+            'displaced': new ol.style.Style({{
+                fill: new ol.style.Fill({{ color: 'rgba(255, 152, 0, 0.8)' }}),
+                stroke: new ol.style.Stroke({{ color: '#e65100', width: 1 }})
+            }}),
+            'stopway': new ol.style.Style({{
+                fill: new ol.style.Fill({{ color: 'rgba(244, 67, 54, 0.8)' }}),
+                stroke: new ol.style.Stroke({{ color: '#b71c1c', width: 1 }})
+            }}),
+            'threshold': new ol.style.Style({{
+                image: new ol.style.Circle({{
+                    radius: 8,
+                    fill: new ol.style.Fill({{ color: '#4caf50' }}),
+                    stroke: new ol.style.Stroke({{ color: '#1b5e20', width: 2 }})
+                }})
+            }})
+        }};
+
+        const vectorSource = new ol.source.Vector({{
+            features: new ol.format.GeoJSON().readFeatures(geojsonData, {{
+                featureProjection: 'EPSG:3857'
+            }})
+        }});
+
+        const vectorLayer = new ol.layer.Vector({{
+            source: vectorSource,
+            style: function(feature) {{
+                return styles[feature.get('zone')];
+            }}
+        }});
+
+        const map = new ol.Map({{
+            target: 'map',
+            layers: [
+                new ol.layer.Tile({{
+                    source: new ol.source.XYZ({{
+                        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}',
+                        attributions: 'Tiles &copy; Esri'
+                    }})
+                }}),
+                vectorLayer
+            ],
+            view: new ol.View({{
+                center: ol.proj.fromLonLat([{center_lon}, {center_lat}]),
+                zoom: 15
+            }})
+        }});
+
+        // Fit view to features
+        map.getView().fit(vectorSource.getExtent(), {{ padding: [50, 50, 50, 50] }});
+
+        // Popup on hover
+        const popup = document.getElementById('popup');
+        map.on('pointermove', function(e) {{
+            const feature = map.forEachFeatureAtPixel(e.pixel, f => f);
+            if (feature) {{
+                popup.style.display = 'block';
+                popup.style.left = (e.pixel[0] + 10) + 'px';
+                popup.style.top = (e.pixel[1] + 10) + 'px';
+                popup.textContent = feature.get('label');
+            }} else {{
+                popup.style.display = 'none';
+            }}
+        }});
+    </script>
+</body>
+</html>'''
+
+    output_path.write_text(html)
+    print(f"\nMap generated: {output_path}")
+
+
 def print_airport(airport: dict) -> None:
     """Print airport data in readable format."""
     print("=" * 60)
@@ -261,6 +602,11 @@ def main():
         sys.exit(1)
 
     print_airport(airport)
+
+    # Generate map HTML
+    if airport["land_runways"]:
+        output_path = Path(f"/tmp/{icao_code}_runways.html")
+        generate_map_html(airport, output_path)
 
 
 if __name__ == "__main__":
