@@ -1,0 +1,15 @@
+# Datos de X-Plane (copiados localmente)
+xplane_data/apt.dat
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# uv / venv
+.venv/
+uv.lock
+
+CLAUDE.md
