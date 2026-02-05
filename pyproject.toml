@@ -1,6 +1,6 @@
 [project]
 name = "xplane-runway-extractor"
-version = "0.1.0"
+version = "1.0.0"
 description = "Extractor de datos de pistas de X-Plane"
 requires-python = ">=3.10"
 dependencies = [
