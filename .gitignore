@@ -1,5 +1,5 @@
 # Datos de X-Plane (copiados localmente)
-xplane_data/apt.dat
+xplane_data/*.dat
 
 # Python
 __pycache__/
