@@ -286,10 +286,7 @@ def sql_navaid(rec: dict) -> str:
         f" LIMIT 1)"
     )
 
-    freq    = esc(rec['frequency'])
-    rng     = str(rec['range_nm']) if rec['range_nm'] else 'NULL'
-    bearing = f"{rec['true_bearing']:.3f}" if rec['true_bearing'] is not None else 'NULL'
-    gs      = f"{rec['glideslope_deg']:.2f}" if rec['glideslope_deg'] is not None else 'NULL'
+    freq = esc(rec['frequency'])
 
     if rec['airport_icao']:
         airport_val = f"(SELECT `icao_code` FROM `airport` WHERE `icao_code` = '{esc(rec['airport_icao'])}' LIMIT 1)"
@@ -299,8 +296,8 @@ def sql_navaid(rec: dict) -> str:
     runway_val = f"'{esc(rec['runway_designator'])}'" if rec['runway_designator'] else 'NULL'
 
     return (
-        f"INSERT INTO `navaid` (`nav_point_id`, `frequency`, `range_nm`, `true_bearing_deg`, `glideslope_deg`, `airport_icao`, `runway_designator`)\n"
-        f"SELECT {np_sq}, '{freq}', {rng}, {bearing}, {gs}, {airport_val}, {runway_val}\n"
+        f"INSERT INTO `navaid` (`nav_point_id`, `frequency`, `airport_icao`, `runway_designator`)\n"
+        f"SELECT {np_sq}, '{freq}', {airport_val}, {runway_val}\n"
         f"WHERE NOT EXISTS (\n"
         f"  SELECT 1 FROM `navaid` WHERE `nav_point_id` = {np_sq}\n"
         f");"
