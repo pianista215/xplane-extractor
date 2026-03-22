@@ -1,5 +1,6 @@
 # Datos de X-Plane (copiados localmente)
 xplane_data/*.dat
+xplane_data/CIFP
 
 # Python
 __pycache__/
